@@ -8,12 +8,14 @@ Current scope:
 - Recursive DPLL solver
 - Unit propagation / Boolean Constraint Propagation (BCP)
 - Basic solver statistics for report writing
+- Local benchmark inputs stored inside the repository
 
 Example:
 
 ```bash
-python3 sat_solver.py ../DPLL-SAT-Solver-master/example-1.cnf --print-model
-python3 sat_solver.py ../SAT_solver/uf20-04.cnf
+python3 sat_solver.py benchmarks/sat/example-1.cnf --print-model
+python3 sat_solver.py benchmarks/sat/uf20-04.cnf
+python3 run_benchmarks.py
 ```
 
 Planned next steps:
