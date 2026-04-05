@@ -1,0 +1,133 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{enumitem}
+
+\setlist[itemize]{topsep=3pt,itemsep=2pt,leftmargin=18pt}
+\setlength{\parskip}{0.45em}
+\setlength{\parindent}{0pt}
+
+\title{ECE51216 Intermediate Report\\Python SAT Solver Project}
+\author{Soomin Lee \\ Dogyu Ryu}
+\date{Spring 2026}
+
+\begin{document}
+\maketitle
+
+\section{Project Overview}
+
+Our project follows Option 1 from the proposal: building a SAT solver based on the DPLL
+(Davis--Putnam--Logemann--Loveland) framework for CNF formulas in DIMACS format. The
+original goal was to start from a correct baseline DPLL solver and then extend it with more
+efficient data structures and heuristics, especially watched literals and VSIDS. The intermediate
+goal for this phase was therefore to establish a working baseline implementation that can parse
+benchmark instances, perform recursive search, and produce measurable statistics for later
+comparison.
+
+\section{Progress Since the Proposal}
+
+The main progress so far has been the implementation of a fresh Python baseline solver rather than
+continuing directly from older reference code. This decision was made to keep the code structure
+simple, readable, and aligned with our own understanding of the algorithm. The current solver has
+already reached the stage where it can read benchmark files, perform search, and report basic
+execution statistics.
+
+The implemented components are listed below.
+
+\begin{itemize}
+    \item \textbf{DIMACS parser.} We implemented input parsing for CNF problems in DIMACS
+    format. The parser handles comment lines, problem headers, standard clause termination with
+    \texttt{0}, and SATLIB-style end markers.
+    \item \textbf{Baseline DPLL recursion.} The solver performs recursive branching on
+    unassigned literals and backtracks when a contradiction is found.
+    \item \textbf{Boolean Constraint Propagation (BCP).} Before each branching step, the solver
+    repeatedly detects unit clauses and propagates forced assignments.
+    \item \textbf{Formula simplification.} After each assignment, clauses satisfied by that literal
+    are removed, while falsified literals are deleted from the remaining clauses.
+    \item \textbf{Instrumentation.} The implementation records the number of decisions,
+    propagations, conflicts, backtracks, recursive calls, maximum recursion depth, and runtime.
+\end{itemize}
+
+At this stage, the emphasis has been on correctness and modularity rather than optimization. This
+is intentional, because the baseline version will serve as the control point when we later compare
+the effect of watched literals and VSIDS.
+
+\section{Current Implementation Status}
+
+The current solver is able to classify both satisfiable and unsatisfiable instances correctly on the
+sample benchmark inputs we tested. In addition, it can optionally print a satisfying assignment in a
+DIMACS-style literal format when a SAT instance is solved.
+
+To validate the baseline implementation, we ran the solver on three representative examples:
+
+\begin{center}
+\begin{tabular}{p{3.1cm} p{1.2cm} p{7.2cm}}
+\toprule
+\textbf{Instance} & \textbf{Result} & \textbf{Observed Statistics} \\
+\midrule
+\texttt{example-1.cnf} & SAT & 4 decisions, 13 propagations, 0 conflicts, 0 backtracks, runtime 0.000220 s \\
+\texttt{unsat.cnf} & UNSAT & 2 decisions, 2 propagations, 2 conflicts, 2 backtracks, runtime 0.000010 s \\
+\texttt{uf20-04.cnf} & SAT & 22 decisions, 67 propagations, 9 conflicts, 16 backtracks, runtime 0.000552 s \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+These results are still preliminary and were obtained only to validate the baseline pipeline from
+input parsing to recursive search. They do not yet constitute a full benchmark study, but they do
+show that the solver is already functional and ready for the next stage of development.
+
+\section{Changes From the Original Proposal}
+
+The core project objective has not changed: we are still building a SAT solver using the DPLL
+framework and planning to evaluate the effect of algorithmic heuristics on performance. However,
+two practical changes have been made since the proposal.
+
+First, we decided to use \textbf{Python instead of C/C++} for the implementation. The main reason
+is faster prototyping and easier debugging during the development phase. Since the course project
+focuses more on algorithmic understanding and comparison than on absolute industrial-level
+performance, Python is sufficient for implementing and evaluating the required ideas.
+
+Second, the implementation order has been slightly adjusted. Instead of trying to introduce several
+advanced heuristics at once, we first focused on producing a correct and instrumented baseline.
+This staged approach makes the later evaluation cleaner, because we will be able to compare:
+
+\begin{itemize}
+    \item baseline DPLL,
+    \item DPLL with watched literals,
+    \item DPLL with watched literals and VSIDS.
+\end{itemize}
+
+This comparison structure is consistent with the original evaluation plan, but the development has
+been reorganized to prioritize a reliable baseline first.
+
+\section{Remaining Work and Plan}
+
+The next implementation step is to replace naive clause scanning with a watched-literal data
+structure so that propagation becomes more efficient. After that, we will add the VSIDS decision
+heuristic to improve branching quality. Once these features are integrated, we will run a more
+systematic benchmark evaluation using CNF instances from SATLIB and other DIMACS-style test
+sets.
+
+Our remaining work is summarized as follows.
+
+\begin{itemize}
+    \item Implement watched literals and verify that propagation remains correct.
+    \item Add the VSIDS heuristic for decision variable selection.
+    \item Expand the benchmark set to include both SAT and UNSAT cases of varying sizes.
+    \item Compare solver versions using runtime, number of decisions, number of propagations,
+    conflicts, and backtracks.
+    \item Summarize the results and discuss which heuristic contributes the most to performance.
+\end{itemize}
+
+\section{Conclusion}
+
+In summary, the project has progressed from planning to a working Python baseline SAT solver.
+The current implementation already supports DIMACS parsing, DPLL recursion, unit propagation,
+and execution statistics, and it has been validated on several sample SAT and UNSAT instances.
+Although watched literals and VSIDS are not yet implemented, the project is now at a stable point
+where these extensions can be added and evaluated in a structured way.
+
+\end{document}
