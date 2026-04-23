@@ -121,6 +121,7 @@ def literal_value(literal: Literal, assignment: Assignment) -> Optional[bool]:
 def clause_is_satisfied(clause: Clause, assignment: Assignment) -> bool:
     return any(literal_value(literal, assignment) is True for literal in clause)
 
+
 def choose_baseline_literal(formula: Formula, assignment: Assignment) -> Literal:
     for clause in formula:
         if clause_is_satisfied(clause, assignment):
@@ -369,6 +370,11 @@ def solve_formula(
         assignment=assignment or {},
         stats=stats,
     )
+
+
+def solve_file(path: Path, heuristic: str = "baseline", propagation: str = "naive") -> SolveResult:
+    _, formula = parse_dimacs(path)
+    return solve_formula(formula, heuristic, propagation)
 
 
 def format_assignment(assignment: Assignment, variables: Iterable[int]) -> str:

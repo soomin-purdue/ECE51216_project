@@ -1,21 +1,25 @@
 \documentclass[11pt]{article}
-\usepackage[margin=1in]{geometry}
-\usepackage[T1]{fontenc}
-\usepackage{lmodern}
-\usepackage{array}
-\usepackage{booktabs}
-\usepackage{enumitem}
 
-\setlist[itemize]{topsep=3pt,itemsep=2pt,leftmargin=18pt}
-\setlength{\parskip}{0.45em}
+\usepackage[margin=1in]{geometry}
+\usepackage{times}
+\usepackage{titlesec}
+\usepackage{setspace}
+
+\setlength{\parskip}{0.3em}
 \setlength{\parindent}{0pt}
 
-\title{ECE51216 Intermediate Report\\Python SAT Solver Project}
-\author{Soomin Lee \\ Dogyu Ryu}
-\date{Spring 2026}
+\titlespacing*{\section}
+{0pt}{0.6em}{0.3em}
 
 \begin{document}
-\maketitle
+
+\begin{center}
+    {\Large \textbf{ECE51216: Digital Systems Design Automation}}\\
+    {\normalsize Spring 2026}\\[0.4em]
+    {\Large \textbf{Intermediate Project Report}}\\[0.3em]
+    {\normalsize Option 1: Build}\\[0.6em]
+    \textbf{Soomin Lee, Dogyu Ryu}
+\end{center}
 
 \section{Project Overview}
 
@@ -33,7 +37,9 @@ The main progress so far has been the implementation of a fresh Python baseline 
 continuing directly from older reference code. This decision was made to keep the code structure
 simple, readable, and aligned with our own understanding of the algorithm. The current solver has
 already reached the stage where it can read benchmark files, perform search, and report basic
-execution statistics.
+execution statistics. In addition, we organized a small self-contained benchmark set inside the
+repository so that the project can be run and demonstrated without relying on external folder
+dependencies.
 
 The implemented components are listed below.
 
@@ -59,25 +65,51 @@ the effect of watched literals and VSIDS.
 
 The current solver is able to classify both satisfiable and unsatisfiable instances correctly on the
 sample benchmark inputs we tested. In addition, it can optionally print a satisfying assignment in a
-DIMACS-style literal format when a SAT instance is solved.
+DIMACS-style literal format when a SAT instance is solved. At the current stage, the repository
+contains a local benchmark set of seven CNF instances: three SAT cases and four UNSAT cases.
+This benchmark set is not intended to be the final evaluation suite, but it is sufficient to verify the
+baseline solver and produce an initial intermediate report with reproducible results.
 
-To validate the baseline implementation, we ran the solver on three representative examples:
+To validate the baseline implementation, we ran the solver on all seven local benchmark inputs:
 
 \begin{center}
-\begin{tabular}{p{3.1cm} p{1.2cm} p{7.2cm}}
-\toprule
-\textbf{Instance} & \textbf{Result} & \textbf{Observed Statistics} \\
-\midrule
-\texttt{example-1.cnf} & SAT & 4 decisions, 13 propagations, 0 conflicts, 0 backtracks, runtime 0.000220 s \\
-\texttt{unsat.cnf} & UNSAT & 2 decisions, 2 propagations, 2 conflicts, 2 backtracks, runtime 0.000010 s \\
-\texttt{uf20-04.cnf} & SAT & 22 decisions, 67 propagations, 9 conflicts, 16 backtracks, runtime 0.000552 s \\
-\bottomrule
+\small
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{|p{3.0cm}|p{1.2cm}|p{1.2cm}|p{1.5cm}|p{2.1cm}|p{2.4cm}|}
+\hline
+\textbf{Instance} & \textbf{Type} & \textbf{Result} & \textbf{Decisions} & \textbf{Propagations} & \textbf{Runtime(s)} \\
+\hline
+\texttt{example-1.cnf} & SAT & SAT & 4 & 13 & 0.000253 \\
+\hline
+\texttt{uf20-01.cnf} & SAT & SAT & 24 & 42 & 0.000340 \\
+\hline
+\texttt{uf20-04.cnf} & SAT & SAT & 22 & 67 & 0.000553 \\
+\hline
+\texttt{unsat.cnf} & UNSAT & UNSAT & 2 & 2 & 0.000007 \\
+\hline
+\texttt{unsat1.cnf} & UNSAT & UNSAT & 6 & 4 & 0.000017 \\
+\hline
+\texttt{unsat2.cnf} & UNSAT & UNSAT & 0 & 3 & 0.000007 \\
+\hline
+\texttt{unsat3.cnf} & UNSAT & UNSAT & 30 & 101 & 0.000232 \\
+\hline
 \end{tabular}
 \end{center}
 
-These results are still preliminary and were obtained only to validate the baseline pipeline from
-input parsing to recursive search. They do not yet constitute a full benchmark study, but they do
-show that the solver is already functional and ready for the next stage of development.
+The results above are preliminary and were collected primarily to validate the end-to-end baseline
+pipeline from parsing to recursive search. However, they already provide some useful observations.
+First, the solver handled both SAT and UNSAT instances correctly on the local set. Second, the
+instances vary enough to show different search behaviors. For example, \texttt{unsat2.cnf} is
+resolved entirely by propagation without any branching decisions, while \texttt{unsat3.cnf}
+requires substantially more decisions and propagations than the smaller UNSAT cases. Among the
+SAT instances in the current set, \texttt{uf20-01.cnf} and \texttt{uf20-04.cnf} already produce
+nontrivial backtracking behavior, making them reasonable early targets for comparing future
+heuristics.
+
+We also verified that the solver can emit a concrete satisfying assignment when a SAT instance is
+found. For example, on \texttt{example-1.cnf}, the solver produced a valid DIMACS-style model in
+addition to the SAT/UNSAT classification and execution statistics. This is useful both for debugging
+and for demonstrating correctness in the report.
 
 \section{Changes From the Original Proposal}
 
@@ -102,6 +134,11 @@ This staged approach makes the later evaluation cleaner, because we will be able
 
 This comparison structure is consistent with the original evaluation plan, but the development has
 been reorganized to prioritize a reliable baseline first.
+
+Finally, we made a small reproducibility-oriented change in project organization. Instead of
+depending on an external reference directory for every test input, we copied a compact benchmark
+set directly into the project repository. This change does not affect the technical goals of the
+proposal, but it makes the current implementation easier to run, share, and evaluate.
 
 \section{Remaining Work and Plan}
 

@@ -203,6 +203,11 @@ def collect_variables(formula: Sequence[Clause]) -> Set[int]:
 def build_cli() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Baseline Python DPLL SAT solver.")
     parser.add_argument("inputs", nargs="+", help="DIMACS CNF input files")
+    parser.add_argument(
+        "--print-stats",
+        action="store_true",
+        help="Print solver statistics for benchmarking",
+    )
     return parser
 
 
@@ -225,6 +230,19 @@ def main() -> int:
             print(f"ASSIGNMENT:{format_assignment(result.assignment, variables)}")
         else:
             print("RESULT:UNSAT")
+
+        if args.print_stats:
+            print(
+                "STATS:"
+                f"solver=baseline,"
+                f"decisions={result.stats.decisions},"
+                f"propagations={result.stats.propagations},"
+                f"conflicts={result.stats.conflicts},"
+                f"backtracks={result.stats.backtracks},"
+                f"recursive_calls={result.stats.recursive_calls},"
+                f"max_depth={result.stats.max_depth},"
+                f"runtime={result.stats.elapsed_seconds:.6f}s"
+            )
 
     return 0
 

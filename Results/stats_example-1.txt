@@ -1,0 +1,20 @@
+=========================== STATISTICS ===============================
+Solving formula from file:  benchmarks/sat/example-1.cnf
+Vars:200, Clauses:200 Stored Clauses:200
+Input Reading Time:  0.0005788803100585938
+-------------------------------
+Restarts:  0
+Learned clauses:  0
+Decisions made:  188
+Implications made:  12
+Time taken:  0.0015120506286621094
+----------- Time breakup ----------------------
+BCP Time:  0.0002684593200683594
+Decide Time:  0.0005860328674316406
+Conflict Analyze Time:  0
+Backtrack Time:  0
+-------------------------------
+RESULT:  SAT
+Statistics stored in file:  Results/stats_example-1.txt
+Satisfying Assignment stored in file:  
+======================================================================
