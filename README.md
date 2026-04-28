@@ -10,15 +10,10 @@ The goal is to keep a plain baseline solver and then measure how watched literal
 
 ## Project Files
 
-- `DPLL_baseline.py`
-  - baseline recursive DPLL solver
-  - DIMACS parser
-  - naive unit propagation
-  - optional stats output with `--print-stats`
 - `DPLL_heuristic.py`
-  - standalone experimental solver
+  - standalone DPLL solver used for all runs
   - `baseline` or `dlis` branching
-  - `naive` or `watched` propagation
+  - `baseline` or `watched` propagation
   - optional stats output with `--print-stats`
 - `run_benchmarks.py`
   - runs the comparison variants on one CNF file or an entire benchmark directory
@@ -37,12 +32,12 @@ The goal is to keep a plain baseline solver and then measure how watched literal
 `DPLL_heuristic.py` exposes two independent options:
 
 - `--heuristic baseline|dlis`
-- `--propagation naive|watched`
+- `--propagation baseline|watched`
 
 For the project comparison, the main variants are:
 
 1. `baseline`
-   - `DPLL_baseline.py`
+   - `DPLL_heuristic.py --heuristic baseline --propagation baseline`
 2. `watched`
    - `DPLL_heuristic.py --heuristic baseline --propagation watched`
 3. `dlis+watched`
@@ -56,12 +51,13 @@ For the project comparison, the main variants are:
 Run the baseline solver on a single file:
 
 ```bash
-python3 DPLL_baseline.py benchmarks/sat/example-1.cnf
+python3 DPLL_heuristic.py benchmarks/sat/example-1.cnf --heuristic baseline --propagation baseline
 ```
 
 Run the heuristic solver with stats:
 
 ```bash
+python3 DPLL_heuristic.py benchmarks/sat/example-1.cnf --heuristic baseline --propagation baseline --print-stats
 python3 DPLL_heuristic.py benchmarks/sat/example-1.cnf --heuristic baseline --propagation watched --print-stats
 python3 DPLL_heuristic.py benchmarks/sat/example-1.cnf --heuristic dlis --propagation watched --print-stats
 ```
@@ -142,6 +138,5 @@ so it is easy to check whether watched literals and DLIS improved over the basel
 
 ## Notes
 
-- `DPLL_baseline.py` is kept separate so the original baseline remains easy to inspect.
-- `DPLL_heuristic.py` is standalone and does not depend on `DPLL_baseline.py` for execution.
+- `DPLL_heuristic.py` contains the baseline and heuristic variants in one file.
 - `run_benchmarks.py` is the main script for project-level comparison and reporting.

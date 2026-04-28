@@ -1,399 +1,481 @@
 #!/usr/bin/env python3
 
-from __future__ import annotations
-
 import argparse
 import time
 from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Deque, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 
-Literal = int
-Clause = Tuple[Literal, ...]
-Formula = Tuple[Clause, ...]
-Assignment = Dict[int, bool]
+UNSET = -1
 
 
-@dataclass
 class SolverStats:
-    decisions: int = 0
-    propagations: int = 0
-    conflicts: int = 0
-    backtracks: int = 0
-    recursive_calls: int = 0
-    max_depth: int = 0
-    elapsed_seconds: float = 0.0
+    def __init__(self):
+        self.decisions = 0
+        self.propagations = 0
+        self.conflicts = 0
+        self.backtracks = 0
+        self.recursive_calls = 0
+        self.max_depth = 0
+        self.elapsed_seconds = 0.0
 
 
-@dataclass
-class SolveResult:
-    is_sat: bool
-    assignment: Assignment
-    stats: SolverStats
+class SolverOutput:
+    def __init__(self, is_sat, assignment, stats):
+        self.is_sat = is_sat
+        self.assignment = assignment
+        self.stats = stats
 
 
-@dataclass
-class WatchedState:
-    formula: Formula
-    assignment: Assignment
-    watch_positions: List[Tuple[int, int]]
-    watch_lists: Dict[Literal, List[int]]
-    unit_queue: Deque[Literal]
-
-    def copy(self) -> "WatchedState":
-        return WatchedState(
-            formula=self.formula,
-            assignment=self.assignment.copy(),
-            watch_positions=self.watch_positions.copy(),
-            watch_lists={literal: clause_ids[:] for literal, clause_ids in self.watch_lists.items()},
-            unit_queue=deque(self.unit_queue),
-        )
-
-
-def parse_dimacs(path: Path) -> Tuple[int, Formula]:
-    clauses: List[Clause] = []
+def parse_dimacs(path):
+    clauses = []
+    clause_buf = []
     num_vars = 0
-    current_clause: List[int] = []
+    saw_header = False
 
-    with path.open("r", encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line or line.startswith("c"):
+    # Read DIMACS file line by line. We keep one temporary clause because
+    # sometimes the clause can continue on next line.
+    with open(path, "r", encoding="utf-8") as fh:
+        for line_no, raw in enumerate(fh, 1):
+            line = raw.strip()
+
+            if not line:
+                continue
+            if line.startswith("c"):
                 continue
             if line.startswith("%"):
                 break
             if line.startswith("p"):
                 parts = line.split()
-                if len(parts) >= 4:
-                    num_vars = int(parts[2])
+                if len(parts) < 4 or parts[1] != "cnf":
+                    raise ValueError(f"{path}:{line_no}: bad DIMACS header")
+                num_vars = int(parts[2])
+                saw_header = True
                 continue
 
+            # Real DIMACS files are rarely pretty: a clause might span lines,
+            # and some generators pack several clauses onto one line.
             for token in line.split():
-                literal = int(token)
-                if literal == 0:
-                    clause = tuple(current_clause)
-                    if clause:
+                try:
+                    lit = int(token)
+                except ValueError as exc:
+                    raise ValueError(f"{path}:{line_no}: bad token {token!r}") from exc
+
+                if lit == 0:
+                    if clause_buf:
+                        clause = tuple(clause_buf)
                         clauses.append(clause)
                         for item in clause:
                             num_vars = max(num_vars, abs(item))
-                    current_clause = []
-                else:
-                    current_clause.append(literal)
+                        clause_buf = []
+                    continue
 
-    if current_clause:
-        raise ValueError(f"Unterminated DIMACS clause in {path}")
+                clause_buf.append(lit)
+
+    if not saw_header:
+        raise ValueError(f"{path}: missing DIMACS header")
+    if clause_buf:
+        raise ValueError(f"{path}: unterminated clause at end of file")
 
     return num_vars, tuple(clauses)
 
 
-def simplify_formula(formula: Formula, literal: Literal) -> Optional[Formula]:
-    simplified: List[Clause] = []
+class SATSolver:
+    def __init__(self, num_vars, clauses, heuristic="baseline", propagation="baseline"):
+        self.num_vars = num_vars
+        self.clauses = clauses
+        self.heuristic = heuristic
+        self.propagation = propagation
+        self.stats = SolverStats()
 
-    for clause in formula:
-        if literal in clause:
-            continue
-        if -literal in clause:
-            reduced = tuple(item for item in clause if item != -literal)
-            if not reduced:
-                return None
-            simplified.append(reduced)
-            continue
-        simplified.append(clause)
+        # Assignment is stored by variable number. -1 means we did not set it.
+        self.vals = [UNSET] * (num_vars + 1)
+        self.trail = []
 
-    return tuple(simplified)
+        # Watched literal buckets are flat list. Literal x is stored at
+        # x + offset, so negative literals also can be array index.
+        self.watch_pos = []
+        self.watch_offset = num_vars
+        self.watch_buckets = [[] for _ in range(2 * num_vars + 1)]
+        self.watch_moves = []
+        self.root_units = deque()
 
+        if propagation == "watched":
+            self._init_watches()
 
-def find_unit_literals(formula: Formula) -> List[Literal]:
-    return [clause[0] for clause in formula if len(clause) == 1]
+    def solve(self):
+        started_at = time.perf_counter()
 
+        if self.propagation == "watched":
+            result = self._solve_watched()
+        else:
+            result = self._search_baseline(self.clauses, depth=0)
 
-def literal_value(literal: Literal, assignment: Assignment) -> Optional[bool]:
-    variable = abs(literal)
-    if variable not in assignment:
-        return None
+        self.stats.elapsed_seconds = time.perf_counter() - started_at
 
-    value = assignment[variable]
-    return value if literal > 0 else not value
+        if result is None:
+            return SolverOutput(False, {}, self.stats)
 
+        return SolverOutput(True, result, self.stats)
 
-def clause_is_satisfied(clause: Clause, assignment: Assignment) -> bool:
-    return any(literal_value(literal, assignment) is True for literal in clause)
+    def _solve_watched(self):
+        if not self._bcp_watched(deque(self.root_units)):
+            return None
 
+        return self._search_watched(depth=0)
 
-def choose_baseline_literal(formula: Formula, assignment: Assignment) -> Literal:
-    for clause in formula:
-        if clause_is_satisfied(clause, assignment):
-            continue
-        for literal in clause:
-            if literal_value(literal, assignment) is None:
-                return literal
-    raise ValueError("No unassigned literal available for branching")
-
-
-def choose_dlis_literal(formula: Formula, assignment: Assignment) -> Literal:
-    literal_counts: Dict[Literal, int] = {}
-
-    for clause in formula:
-        if clause_is_satisfied(clause, assignment):
-            continue
-        for literal in clause:
-            if literal_value(literal, assignment) is None:
-                literal_counts[literal] = literal_counts.get(literal, 0) + 1
-
-    if not literal_counts:
-        raise ValueError("No unassigned literal available for branching")
-
-    return max(
-        literal_counts.items(),
-        key=lambda item: (item[1], -abs(item[0]), item[0] > 0),
-    )[0]
-
-
-def choose_branch_literal(formula: Formula, assignment: Assignment, heuristic: str) -> Literal:
-    if heuristic == "dlis":
-        return choose_dlis_literal(formula, assignment)
-    return choose_baseline_literal(formula, assignment)
-
-
-def propagate_units_naive(
-    formula: Formula,
-    assignment: Assignment,
-    stats: SolverStats,
-) -> Tuple[Optional[Formula], Assignment]:
-    working_formula = formula
-    working_assignment = dict(assignment)
-
-    while True:
-        unit_literals = find_unit_literals(working_formula)
-        if not unit_literals:
-            return working_formula, working_assignment
-
-        for literal in unit_literals:
-            variable = abs(literal)
-            value = literal > 0
-
-            if variable in working_assignment:
-                if working_assignment[variable] != value:
-                    stats.conflicts += 1
-                    return None, working_assignment
+    def _init_watches(self):
+        for cid, clause in enumerate(self.clauses):
+            if len(clause) == 1:
+                # Unit clause only has one literal, so both watches point same.
+                lit = clause[0]
+                self.watch_pos.append((0, 0))
+                self.watch_buckets[lit + self.watch_offset].append(cid)
+                self.root_units.append(lit)
                 continue
 
-            working_assignment[variable] = value
-            stats.propagations += 1
-            updated_formula = simplify_formula(working_formula, literal)
-            if updated_formula is None:
-                stats.conflicts += 1
-                return None, working_assignment
-            working_formula = updated_formula
+            # For longer clause we start by watching first two literals.
+            left = clause[0]
+            right = clause[1]
+            self.watch_pos.append((0, 1))
+            self.watch_buckets[left + self.watch_offset].append(cid)
+            self.watch_buckets[right + self.watch_offset].append(cid)
 
+    def _snapshot(self):
+        out = {}
 
-def dpll_naive(
-    formula: Formula,
-    assignment: Assignment,
-    stats: SolverStats,
-    heuristic: str,
-    depth: int = 0,
-) -> Optional[Assignment]:
-    stats.recursive_calls += 1
-    stats.max_depth = max(stats.max_depth, depth)
+        for var in range(1, self.num_vars + 1):
+            if self.vals[var] != UNSET:
+                out[var] = bool(self.vals[var])
 
-    propagated_formula, propagated_assignment = propagate_units_naive(formula, assignment, stats)
-    if propagated_formula is None:
-        return None
-    if not propagated_formula:
-        return propagated_assignment
+        return out
 
-    branch_literal = choose_branch_literal(propagated_formula, propagated_assignment, heuristic)
+    def _lit_value(self, lit):
+        raw = self.vals[abs(lit)]
+        if raw == UNSET:
+            return None
+        if lit > 0:
+            return bool(raw)
+        return not bool(raw)
 
-    for decision_literal in (branch_literal, -branch_literal):
-        stats.decisions += 1
-        next_assignment = dict(propagated_assignment)
-        next_assignment[abs(decision_literal)] = decision_literal > 0
-        next_formula = simplify_formula(propagated_formula, decision_literal)
+    def _clause_is_true(self, clause):
+        for lit in clause:
+            if self._lit_value(lit) is True:
+                return True
+        return False
 
-        if next_formula is None:
-            stats.conflicts += 1
-            continue
+    def _all_true(self, clauses):
+        for clause in clauses:
+            if not self._clause_is_true(clause):
+                return False
+        return True
 
-        result = dpll_naive(next_formula, next_assignment, stats, heuristic, depth + 1)
-        if result is not None:
-            return result
+    def _assign(self, lit):
+        var = abs(lit)
+        bit = 1 if lit > 0 else 0
+        cur = self.vals[var]
 
-        stats.backtracks += 1
+        # If variable was already assigned, just check if it agrees.
+        if cur != UNSET:
+            return cur == bit, False
 
-    return None
+        self.vals[var] = bit
+        self.trail.append(var)
+        return True, True
 
+    def _rollback_vals(self, trail_mark):
+        while len(self.trail) > trail_mark:
+            var = self.trail.pop()
+            self.vals[var] = UNSET
 
-def build_watched_state(formula: Formula) -> WatchedState:
-    watch_positions: List[Tuple[int, int]] = []
-    watch_lists: Dict[Literal, List[int]] = {}
-    unit_queue: Deque[Literal] = deque()
+    def _rollback_watch(self, trail_mark, watch_mark):
+        # During search we mutate watch lists. This undo the watch moves when
+        # recursive branch fails.
+        while len(self.watch_moves) > watch_mark:
+            cid, old_pos, old_lit, new_lit = self.watch_moves.pop()
 
-    for clause_index, clause in enumerate(formula):
-        if len(clause) == 1:
-            watch_positions.append((0, 0))
-            watched_literal = clause[0]
-            watch_lists.setdefault(watched_literal, []).append(clause_index)
-            unit_queue.append(watched_literal)
-            continue
+            self.watch_buckets[new_lit + self.watch_offset].remove(cid)
 
-        watch_positions.append((0, 1))
-        first_literal = clause[0]
-        second_literal = clause[1]
-        watch_lists.setdefault(first_literal, []).append(clause_index)
-        watch_lists.setdefault(second_literal, []).append(clause_index)
+            self.watch_pos[cid] = old_pos
+            self.watch_buckets[old_lit + self.watch_offset].append(cid)
 
-    return WatchedState(
-        formula=formula,
-        assignment={},
-        watch_positions=watch_positions,
-        watch_lists=watch_lists,
-        unit_queue=unit_queue,
-    )
+        self._rollback_vals(trail_mark)
 
+    def _find_units(self, clauses):
+        units = []
 
-def assign_watched_literal(state: WatchedState, literal: Literal) -> Tuple[bool, bool]:
-    variable = abs(literal)
-    value = literal > 0
+        for clause in clauses:
+            if len(clause) == 1:
+                units.append(clause[0])
 
-    if variable in state.assignment:
-        return state.assignment[variable] == value, False
+        return units
 
-    state.assignment[variable] = value
-    falsified_literal = -literal
+    def _simplify(self, clauses, lit):
+        out = []
 
-    for clause_index in list(state.watch_lists.get(falsified_literal, [])):
-        clause = state.formula[clause_index]
-        watch_a, watch_b = state.watch_positions[clause_index]
-
-        if clause[watch_b] == falsified_literal and clause[watch_a] != falsified_literal:
-            watch_a, watch_b = watch_b, watch_a
-
-        other_index = watch_b
-        other_literal = clause[other_index]
-
-        replacement_index: Optional[int] = None
-        for index, candidate in enumerate(clause):
-            if index == watch_a or index == other_index:
+        for clause in clauses:
+            # If clause contains true literal, whole clause is already satisfied.
+            if lit in clause:
                 continue
-            if literal_value(candidate, state.assignment) is not False:
-                replacement_index = index
-                break
 
-        if replacement_index is not None:
-            new_literal = clause[replacement_index]
-            state.watch_positions[clause_index] = (replacement_index, other_index)
-            state.watch_lists[falsified_literal].remove(clause_index)
-            state.watch_lists.setdefault(new_literal, []).append(clause_index)
-            continue
+            if -lit in clause:
+                # Remove the false literal from clause for naive DPLL version.
+                reduced = []
+                for item in clause:
+                    if item != -lit:
+                        reduced.append(item)
 
-        other_value = literal_value(other_literal, state.assignment)
-        if other_value is False:
-            return False, True
-        if other_value is None:
-            state.unit_queue.append(other_literal)
+                if not reduced:
+                    return None
 
-    return True, True
+                out.append(tuple(reduced))
+                continue
 
+            out.append(clause)
 
-def propagate_units_watched(state: WatchedState, stats: SolverStats) -> bool:
-    while state.unit_queue:
-        unit_literal = state.unit_queue.popleft()
-        success, assigned_new = assign_watched_literal(state, unit_literal)
-        if assigned_new:
-            stats.propagations += 1
-        if not success:
-            stats.conflicts += 1
-            return False
+        return tuple(out)
 
-    return True
+    def _pick_branch_lit(self, clauses):
+        if self.heuristic == "dlis":
+            return self._pick_dlis_lit(clauses)
+        return self._pick_first_lit(clauses)
 
+    def _pick_first_lit(self, clauses):
+        for clause in clauses:
+            if self._clause_is_true(clause):
+                continue
 
-def all_clauses_satisfied(formula: Formula, assignment: Assignment) -> bool:
-    return all(clause_is_satisfied(clause, assignment) for clause in formula)
+            for lit in clause:
+                if self._lit_value(lit) is None:
+                    return lit
 
+        raise ValueError("No branch literal available")
 
-def dpll_watched(
-    state: WatchedState,
-    stats: SolverStats,
-    heuristic: str,
-    depth: int = 0,
-) -> Optional[Assignment]:
-    stats.recursive_calls += 1
-    stats.max_depth = max(stats.max_depth, depth)
+    def _pick_dlis_lit(self, clauses):
+        counts = {}
 
-    if not propagate_units_watched(state, stats):
+        # DLIS counts only literals that are still not assigned in unsatisfied
+        # clauses. The most frequent literal is used as next decision.
+        for clause in clauses:
+            if self._clause_is_true(clause):
+                continue
+
+            for lit in clause:
+                if self._lit_value(lit) is None:
+                    counts[lit] = counts.get(lit, 0) + 1
+
+        if not counts:
+            raise ValueError("No branch literal available")
+
+        best_lit = None
+        best_key = None
+
+        for lit, freq in counts.items():
+            # Tie-break on lower variable id so benchmarks stay deterministic.
+            key = (freq, -abs(lit), lit > 0)
+            if best_key is None or key > best_key:
+                best_key = key
+                best_lit = lit
+
+        return best_lit
+
+    def _bcp_baseline(self, clauses):
+        cur = clauses
+
+        # Keep applying unit propagation until no unit clauses remain.
+        while True:
+            units = self._find_units(cur)
+            if not units:
+                return cur
+
+            for lit in units:
+                ok, fresh = self._assign(lit)
+                if not ok:
+                    self.stats.conflicts += 1
+                    return None
+                if not fresh:
+                    continue
+
+                self.stats.propagations += 1
+                cur = self._simplify(cur, lit)
+                if cur is None:
+                    self.stats.conflicts += 1
+                    return None
+
+    def _search_baseline(self, clauses, depth=0):
+        self.stats.recursive_calls += 1
+        self.stats.max_depth = max(self.stats.max_depth, depth)
+
+        frame_mark = len(self.trail)
+        cur = self._bcp_baseline(clauses)
+        if cur is None:
+            self._rollback_vals(frame_mark)
+            return None
+
+        if not cur:
+            return self._snapshot()
+
+        lit = self._pick_branch_lit(cur)
+
+        for choice in (lit, -lit):
+            self.stats.decisions += 1
+
+            trail_mark = len(self.trail)
+            ok, _ = self._assign(choice)
+            if not ok:
+                self.stats.conflicts += 1
+                self._rollback_vals(trail_mark)
+                continue
+
+            next_clauses = self._simplify(cur, choice)
+            if next_clauses is None:
+                self.stats.conflicts += 1
+                self._rollback_vals(trail_mark)
+                continue
+
+            result = self._search_baseline(next_clauses, depth + 1)
+            if result is not None:
+                return result
+
+            self._rollback_vals(trail_mark)
+            self.stats.backtracks += 1
+
+        self._rollback_vals(frame_mark)
         return None
 
-    if all_clauses_satisfied(state.formula, state.assignment):
-        return state.assignment
+    def _assign_watched(self, lit, q):
+        ok, fresh = self._assign(lit)
+        if not ok or not fresh:
+            return ok, fresh
 
-    branch_literal = choose_branch_literal(state.formula, state.assignment, heuristic)
+        # Only clauses watching the opposite literal can become problematic.
+        dead = -lit
+        dead_bucket = self.watch_buckets[dead + self.watch_offset]
+        touched = dead_bucket[:]
 
-    for decision_literal in (branch_literal, -branch_literal):
-        stats.decisions += 1
-        next_state = state.copy()
-        success, _ = assign_watched_literal(next_state, decision_literal)
+        for cid in touched:
+            clause = self.clauses[cid]
+            w0, w1 = self.watch_pos[cid]
 
-        if not success:
-            stats.conflicts += 1
-            continue
+            if clause[w1] == dead and clause[w0] != dead:
+                w0, w1 = w1, w0
 
-        result = dpll_watched(next_state, stats, heuristic, depth + 1)
-        if result is not None:
-            return result
+            other_idx = w1
+            other_lit = clause[other_idx]
+            alt_idx = None
 
-        stats.backtracks += 1
+            # Try to move the dead watch to a literal that is not false.
+            for idx, cand in enumerate(clause):
+                if idx == w0 or idx == other_idx:
+                    continue
+                if self._lit_value(cand) is not False:
+                    alt_idx = idx
+                    break
 
-    return None
+            if alt_idx is not None:
+                w_lit = clause[alt_idx]
+                old_pos = self.watch_pos[cid]
+                self.watch_pos[cid] = (alt_idx, other_idx)
+                dead_bucket.remove(cid)
+                self.watch_buckets[w_lit + self.watch_offset].append(cid)
+                self.watch_moves.append((cid, old_pos, dead, w_lit))
+                continue
+
+            other_val = self._lit_value(other_lit)
+            if other_val is False:
+                return False, fresh
+            if other_val is None:
+                # No replacement found, so other watch becomes new unit literal.
+                q.append(other_lit)
+
+        return True, fresh
+
+    def _bcp_watched(self, q):
+        # Queue contains literals that must be propagated by watched-literal BCP.
+        while q:
+            lit = q.popleft()
+            ok, fresh = self._assign_watched(lit, q)
+            if not ok:
+                self.stats.conflicts += 1
+                return False
+            if fresh:
+                self.stats.propagations += 1
+
+        return True
+
+    def _search_watched(self, depth=0):
+        self.stats.recursive_calls += 1
+        self.stats.max_depth = max(self.stats.max_depth, depth)
+
+        # If all clauses are already true, current partial assignment is enough.
+        if self._all_true(self.clauses):
+            return self._snapshot()
+
+        lit = self._pick_branch_lit(self.clauses)
+
+        for choice in (lit, -lit):
+            self.stats.decisions += 1
+
+            trail_mark = len(self.trail)
+            watch_mark = len(self.watch_moves)
+            q = deque()
+
+            ok, _ = self._assign_watched(choice, q)
+            if not ok:
+                self.stats.conflicts += 1
+                self._rollback_watch(trail_mark, watch_mark)
+                continue
+
+            if not self._bcp_watched(q):
+                self._rollback_watch(trail_mark, watch_mark)
+                self.stats.backtracks += 1
+                continue
+
+            result = self._search_watched(depth + 1)
+            if result is not None:
+                return result
+
+            self._rollback_watch(trail_mark, watch_mark)
+            self.stats.backtracks += 1
+
+        return None
 
 
-def solve_formula(
-    formula: Formula,
-    heuristic: str = "baseline",
-    propagation: str = "naive",
-) -> SolveResult:
-    stats = SolverStats()
-    start = time.perf_counter()
+def solve_formula(clauses, heuristic="baseline", propagation="baseline", num_vars=None):
+    if num_vars is None:
+        num_vars = 0
+        for clause in clauses:
+            for lit in clause:
+                num_vars = max(num_vars, abs(lit))
 
-    if propagation == "watched":
-        assignment = dpll_watched(build_watched_state(formula), stats, heuristic)
-    else:
-        assignment = dpll_naive(formula, {}, stats, heuristic)
-
-    stats.elapsed_seconds = time.perf_counter() - start
-
-    return SolveResult(
-        is_sat=assignment is not None,
-        assignment=assignment or {},
-        stats=stats,
-    )
+    solver = SATSolver(num_vars, clauses, heuristic=heuristic, propagation=propagation)
+    return solver.solve()
 
 
-def solve_file(path: Path, heuristic: str = "baseline", propagation: str = "naive") -> SolveResult:
-    _, formula = parse_dimacs(path)
-    return solve_formula(formula, heuristic, propagation)
+def solve_file(path, heuristic="baseline", propagation="baseline"):
+    num_vars, clauses = parse_dimacs(path)
+    return solve_formula(clauses, heuristic, propagation, num_vars=num_vars)
 
 
-def format_assignment(assignment: Assignment, variables: Iterable[int]) -> str:
-    output: List[str] = []
-    for variable in sorted(set(variables)):
-        value = 1 if assignment.get(variable, False) else 0
-        output.append(f"{variable}={value}")
-    return " ".join(output)
+def format_assignment(assignment, num_vars, clauses):
+    seen = set()
+
+    for clause in clauses:
+        for lit in clause:
+            seen.add(abs(lit))
+
+    if not seen:
+        seen = set(range(1, num_vars + 1))
+
+    parts = []
+    for var in sorted(seen):
+        value = 1 if assignment.get(var, False) else 0
+        parts.append(f"{var}={value}")
+
+    return " ".join(parts)
 
 
-def collect_variables(formula: Sequence[Clause]) -> Set[int]:
-    variables: Set[int] = set()
-    for clause in formula:
-        for literal in clause:
-            variables.add(abs(literal))
-    return variables
-
-
-def build_cli() -> argparse.ArgumentParser:
+def build_cli():
     parser = argparse.ArgumentParser(description="DPLL SAT solver with DLIS and watched literals.")
     parser.add_argument("inputs", nargs="+", help="DIMACS CNF input files")
     parser.add_argument(
@@ -404,8 +486,8 @@ def build_cli() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--propagation",
-        choices=("naive", "watched"),
-        default="naive",
+        choices=("baseline", "watched"),
+        default="baseline",
         help="Propagation method to use inside DPLL",
     )
     parser.add_argument(
@@ -416,7 +498,7 @@ def build_cli() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
+def main():
     parser = build_cli()
     args = parser.parse_args()
 
@@ -425,14 +507,17 @@ def main() -> int:
         if not path.exists():
             raise FileNotFoundError(f"Input file not found: {path}")
 
-        _, formula = parse_dimacs(path)
-        result = solve_formula(formula, heuristic=args.heuristic, propagation=args.propagation)
-
-        variables = collect_variables(formula)
+        num_vars, clauses = parse_dimacs(path)
+        result = solve_formula(
+            clauses,
+            heuristic=args.heuristic,
+            propagation=args.propagation,
+            num_vars=num_vars,
+        )
 
         if result.is_sat:
             print("RESULT:SAT")
-            print(f"ASSIGNMENT:{format_assignment(result.assignment, variables)}")
+            print(f"ASSIGNMENT:{format_assignment(result.assignment, num_vars, clauses)}")
         else:
             print("RESULT:UNSAT")
 
@@ -450,8 +535,6 @@ def main() -> int:
                 f"runtime={result.stats.elapsed_seconds:.6f}s"
             )
 
-    return 0
-
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

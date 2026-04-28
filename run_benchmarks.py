@@ -6,14 +6,12 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
-from DPLL_baseline import solve_file as solve_baseline_file
 from DPLL_heuristic import solve_file as solve_heuristic_file
 
 
 @dataclass(frozen=True)
 class Variant:
     name: str
-    solver: str
     heuristic: str
     propagation: str
 
@@ -31,9 +29,9 @@ class Record:
 
 
 VARIANTS = [
-    Variant("baseline", "baseline", "-", "-"),
-    Variant("watched", "heuristic", "baseline", "watched"),
-    Variant("dlis+watched", "heuristic", "dlis", "watched"),
+    Variant("baseline", "baseline", "baseline"),
+    Variant("watched", "baseline", "watched"),
+    Variant("dlis+watched", "dlis", "watched"),
 ]
 
 
@@ -49,14 +47,11 @@ def expected_result(path: Path) -> bool:
 
 
 def run_variant(input_path: Path, variant: Variant) -> Record:
-    if variant.solver == "baseline":
-        result = solve_baseline_file(input_path)
-    else:
-        result = solve_heuristic_file(
-            input_path,
-            heuristic=variant.heuristic,
-            propagation=variant.propagation,
-        )
+    result = solve_heuristic_file(
+        input_path,
+        heuristic=variant.heuristic,
+        propagation=variant.propagation,
+    )
 
     stats = result.stats
     return Record(
