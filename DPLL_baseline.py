@@ -39,7 +39,7 @@ def parse_dimacs(path: Path) -> Tuple[int, Formula]:
     current_clause: List[int] = []
 
     with path.open("r", encoding="utf-8") as handle:
-        for raw_line in handle:
+        for line_number, raw_line in enumerate(handle, start=1):
             line = raw_line.strip()
             if not line or line.startswith("c"):
                 continue
@@ -49,6 +49,7 @@ def parse_dimacs(path: Path) -> Tuple[int, Formula]:
                 parts = line.split()
                 if len(parts) >= 4:
                     num_vars = int(parts[2])
+                    #print(f"parse: header variables={parts[2]}, clauses={parts[3]}")
                 continue
 
             for token in line.split():
@@ -66,10 +67,14 @@ def parse_dimacs(path: Path) -> Tuple[int, Formula]:
     if current_clause:
         raise ValueError(f"Unterminated DIMACS clause in {path}")
 
+    #print(f"parse: parsed num_vars={num_vars}, clauses={len(clauses)}")
     return num_vars, tuple(clauses)
 
 
-def simplify_formula(formula: Formula, literal: Literal) -> Optional[Formula]:
+def simplify_formula(
+    formula: Formula,
+    literal: Literal,
+) -> Optional[Formula]:
     simplified: List[Clause] = []
 
     for clause in formula:
@@ -79,18 +84,24 @@ def simplify_formula(formula: Formula, literal: Literal) -> Optional[Formula]:
             reduced = tuple(item for item in clause if item != -literal)
             if not reduced:
                 return None
+            #print(f"reduced {clause} -> {reduced}")
             simplified.append(reduced)
             continue
         simplified.append(clause)
 
+    #print(f"output has {len(simplified)} clauses")
     return tuple(simplified)
 
 
 def find_unit_literals(formula: Formula) -> List[Literal]:
-    return [clause[0] for clause in formula if len(clause) == 1]
+    unit_literals = [clause[0] for clause in formula if len(clause) == 1]
+    return unit_literals
 
 
-def choose_branch_literal(formula: Formula, assignment: Assignment) -> Literal:
+def choose_branch_literal(
+    formula: Formula,
+    assignment: Assignment,
+) -> Literal:
     for clause in formula:
         for literal in clause:
             if abs(literal) not in assignment:
@@ -139,6 +150,8 @@ def dpll(
     stats.recursive_calls += 1
     stats.max_depth = max(stats.max_depth, depth)
 
+    #print(f"dpll: clauses={len(formula)}, assignment={assignment}")
+
     propagated_formula, propagated_assignment = propagate_units(formula, assignment, stats)
     if propagated_formula is None:
         return None
@@ -149,6 +162,7 @@ def dpll(
 
     for decision_literal in (branch_literal, -branch_literal):
         stats.decisions += 1
+        #print(f"dpll: decision try {decision_literal}=True")
         next_assignment = dict(propagated_assignment)
         next_assignment[abs(decision_literal)] = decision_literal > 0
         next_formula = simplify_formula(propagated_formula, decision_literal)
@@ -162,15 +176,15 @@ def dpll(
             return result
 
         stats.backtracks += 1
-
     return None
-
 
 def solve_formula(formula: Formula) -> SolveResult:
     stats = SolverStats()
     start = time.perf_counter()
+    #print(f"{len(formula)} clauses")
     assignment = dpll(formula, {}, stats)
     stats.elapsed_seconds = time.perf_counter() - start
+    #print(f"Done is_sat={assignment is not None}")
 
     return SolveResult(
         is_sat=assignment is not None,
