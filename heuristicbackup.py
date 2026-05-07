@@ -6,9 +6,7 @@ from collections import deque
 from pathlib import Path
 
 
-
 UNSET = -1
-
 
 
 class SolverStats:
@@ -21,11 +19,13 @@ class SolverStats:
         self.max_depth = 0
         self.elapsed_seconds = 0.0
 
+
 class SolverOutput:
     def __init__(self, is_sat, assignment, stats):
         self.is_sat = is_sat
         self.assignment = assignment
         self.stats = stats
+
 
 def parse_dimacs(path):
     clauses = []
@@ -104,16 +104,16 @@ class SATSolver:
         self.root_units = deque()
 
         if propagation == "watched":
-            self.init_watched_literals()
+            self._init_watches()
 
     def solve(self):
         started_at = time.perf_counter()
         #print(f"solve: heuristic={self.heuristic}, propagation={self.propagation}")
 
         if self.propagation == "watched":
-            result = self.solve_watched_literals()
+            result = self._solve_watched()
         else:
-            result = self.search_base_propagate(self.clauses, depth=0)
+            result = self._search_baseline(self.clauses, depth=0)
 
         self.stats.elapsed_seconds = time.perf_counter() - started_at
 
@@ -122,13 +122,13 @@ class SATSolver:
 
         return SolverOutput(True, result, self.stats)
 
-    def solve_watched_literals(self):
-        if not self.propagate_watched_literals(deque(self.root_units)):
+    def _solve_watched(self):
+        if not self._bcp_watched(deque(self.root_units)):
             return None
 
-        return self.search_watched_literals(depth=0)
+        return self._search_watched(depth=0)
 
-    def init_watched_literals(self):
+    def _init_watches(self):
         for cid, clause in enumerate(self.clauses):
             if len(clause) == 1:
                 # Unit clause only has one literal, so both watches point same.
@@ -147,7 +147,7 @@ class SATSolver:
             self.watch_buckets[right + self.watch_offset].append(cid)
             #print(f"init: clause {cid} watches {left}, {right}")
 
-    def snapshot(self):
+    def _snapshot(self):
         out = {}
 
         for var in range(1, self.num_vars + 1):
@@ -156,7 +156,7 @@ class SATSolver:
 
         return out
 
-    def literal_value(self, lit):
+    def _lit_value(self, lit):
         raw = self.vals[abs(lit)]
         if raw == UNSET:
             return None
@@ -164,13 +164,19 @@ class SATSolver:
             return bool(raw)
         return not bool(raw)
 
-    def clause_satisfied(self, clause):
+    def _clause_is_true(self, clause):
         for lit in clause:
-            if self.literal_value(lit) is True:
+            if self._lit_value(lit) is True:
                 return True
         return False
 
-    def assign_literal(self, lit):
+    def _all_true(self, clauses):
+        for clause in clauses:
+            if not self._clause_is_true(clause):
+                return False
+        return True
+
+    def _assign(self, lit):
         var = abs(lit)
         bit = 1 if lit > 0 else 0
         cur = self.vals[var]
@@ -184,13 +190,13 @@ class SATSolver:
         #print(f"assign: set x{var}={bit}")
         return True, True
 
-    def rollback_assignments(self, trail_mark):
+    def _rollback_vals(self, trail_mark):
         while len(self.trail) > trail_mark:
             var = self.trail.pop()
             self.vals[var] = UNSET
             #print(f"rollback: unset x{var}")
 
-    def rollback_state(self, trail_mark, watch_mark):
+    def _rollback_watch(self, trail_mark, watch_mark):
         # During search we mutate watch lists. This undo the watch moves when
         # recursive branch fails.
         while len(self.watch_moves) > watch_mark:
@@ -201,9 +207,9 @@ class SATSolver:
             self.watch_pos[cid] = old_pos
             self.watch_buckets[old_lit + self.watch_offset].append(cid)
 
-        self.rollback_assignments(trail_mark)
+        self._rollback_vals(trail_mark)
 
-    def find_unit_literals(self, clauses):
+    def _find_units(self, clauses):
         units = []
 
         for clause in clauses:
@@ -212,7 +218,7 @@ class SATSolver:
 
         return units
 
-    def simplify_clauses(self, clauses, lit):
+    def _simplify(self, clauses, lit):
         out = []
 
         for clause in clauses:
@@ -239,33 +245,33 @@ class SATSolver:
         #print(f"after {lit}, clauses={len(out)}")
         return tuple(out)
 
-    def choose_branch_literal(self, clauses):
+    def _pick_branch_lit(self, clauses):
         if self.heuristic == "dlis":
-            return self.choose_dlis_literal(clauses)
-        return self.first_unassigned_literal(clauses)
+            return self._pick_dlis_lit(clauses)
+        return self._pick_first_lit(clauses)
 
-    def first_unassigned_literal(self, clauses):
+    def _pick_first_lit(self, clauses):
         for clause in clauses:
-            if self.clause_satisfied(clause):
+            if self._clause_is_true(clause):
                 continue
 
             for lit in clause:
-                if self.literal_value(lit) is None:
+                if self._lit_value(lit) is None:
                     return lit
 
         raise ValueError("No branch literal available")
 
-    def choose_dlis_literal(self, clauses):
+    def _pick_dlis_lit(self, clauses):
         counts = {}
 
         # DLIS counts only literals that are still not assigned in unsatisfied
         # clauses. The most frequent literal is used as next decision.
         for clause in clauses:
-            if self.clause_satisfied(clause):
+            if self._clause_is_true(clause):
                 continue
 
             for lit in clause:
-                if self.literal_value(lit) is None:
+                if self._lit_value(lit) is None:
                     counts[lit] = counts.get(lit, 0) + 1
 
         if not counts:
@@ -282,18 +288,18 @@ class SATSolver:
                 best_lit = lit
         return best_lit
 
-    def propagate_base_scan(self, clauses):
+    def _bcp_baseline(self, clauses):
         cur = clauses
 
         # Keep applying unit propagation until no unit clauses remain.
         while True:
-            units = self.find_unit_literals(cur)
+            units = self._find_units(cur)
             if not units:
                 return cur
 
             #print(f"bcp baseline: units={units}")
             for lit in units:
-                ok, fresh = self.assign_literal(lit)
+                ok, fresh = self._assign(lit)
                 if not ok:
                     self.stats.conflicts += 1
                     return None
@@ -301,57 +307,57 @@ class SATSolver:
                     continue
 
                 self.stats.propagations += 1
-                cur = self.simplify_clauses(cur, lit)
+                cur = self._simplify(cur, lit)
                 if cur is None:
                     self.stats.conflicts += 1
                     return None
 
-    def search_base_propagate(self, clauses, depth=0):
+    def _search_baseline(self, clauses, depth=0):
         self.stats.recursive_calls += 1
         self.stats.max_depth = max(self.stats.max_depth, depth)
         #print(f"dpll baseline: depth={depth}, clauses={len(clauses)}, trail={self.trail}")
 
         frame_mark = len(self.trail)
-        cur = self.propagate_base_scan(clauses)
+        cur = self._bcp_baseline(clauses)
         if cur is None:
-            self.rollback_assignments(frame_mark)
+            self._rollback_vals(frame_mark)
             return None
 
         if not cur:
-            return self.snapshot()
+            return self._snapshot()
 
-        lit = self.choose_branch_literal(cur)
+        lit = self._pick_branch_lit(cur)
 
         for choice in (lit, -lit):
             self.stats.decisions += 1
             #print(f"dpll: try {choice} at depth={depth}")
 
             trail_mark = len(self.trail)
-            ok, _ = self.assign_literal(choice)
+            ok, _ = self._assign(choice)
             if not ok:
                 self.stats.conflicts += 1
-                self.rollback_assignments(trail_mark)
+                self._rollback_vals(trail_mark)
                 continue
 
-            next_clauses = self.simplify_clauses(cur, choice)
+            next_clauses = self._simplify(cur, choice)
             if next_clauses is None:
                 self.stats.conflicts += 1
-                self.rollback_assignments(trail_mark)
+                self._rollback_vals(trail_mark)
                 continue
 
-            result = self.search_base_propagate(next_clauses, depth + 1)
+            result = self._search_baseline(next_clauses, depth + 1)
             if result is not None:
                 return result
 
-            self.rollback_assignments(trail_mark)
+            self._rollback_vals(trail_mark)
             self.stats.backtracks += 1
             #print(f"dpll: backtrack from {choice}")
 
-        self.rollback_assignments(frame_mark)
+        self._rollback_vals(frame_mark)
         return None
 
-    def assign_and_update_literals(self, lit, q):
-        ok, fresh = self.assign_literal(lit)
+    def _assign_watched(self, lit, q):
+        ok, fresh = self._assign(lit)
         if not ok or not fresh:
             return ok, fresh
 
@@ -376,7 +382,7 @@ class SATSolver:
             for idx, cand in enumerate(clause):
                 if idx == w0 or idx == other_idx:
                     continue
-                if self.literal_value(cand) is not False:
+                if self._lit_value(cand) is not False:
                     alt_idx = idx
                     break
 
@@ -390,7 +396,7 @@ class SATSolver:
                 #print(f"clause {cid}, {dead} -> {w_lit}")
                 continue
 
-            other_val = self.literal_value(other_lit)
+            other_val = self._lit_value(other_lit)
             if other_val is False:
                 #print(f"watched conflict: clause {cid}")
                 return False, fresh
@@ -401,11 +407,11 @@ class SATSolver:
 
         return True, fresh
 
-    def propagate_watched_literals(self, q):
+    def _bcp_watched(self, q):
         # Queue contains literals that must be propagated by watched-literal BCP.
         while q:
             lit = q.popleft()
-            ok, fresh = self.assign_and_update_literals(lit, q)
+            ok, fresh = self._assign_watched(lit, q)
             if not ok:
                 self.stats.conflicts += 1
                 return False
@@ -414,16 +420,16 @@ class SATSolver:
 
         return True
 
-    def search_watched_literals(self, depth=0):
+    def _search_watched(self, depth=0):
         self.stats.recursive_calls += 1
         self.stats.max_depth = max(self.stats.max_depth, depth)
         #print(f"dpll: depth={depth}, assigned={len(self.trail)}")
 
         # If all clauses are already true, current partial assignment is enough.
-        if all(self.clause_satisfied(clause) for clause in self.clauses):
-            return self.snapshot()
+        if self._all_true(self.clauses):
+            return self._snapshot()
 
-        lit = self.choose_branch_literal(self.clauses)
+        lit = self._pick_branch_lit(self.clauses)
 
         for choice in (lit, -lit):
             self.stats.decisions += 1
@@ -433,22 +439,22 @@ class SATSolver:
             watch_mark = len(self.watch_moves)
             q = deque()
 
-            ok, _ = self.assign_and_update_literals(choice, q)
+            ok, _ = self._assign_watched(choice, q)
             if not ok:
                 self.stats.conflicts += 1
-                self.rollback_state(trail_mark, watch_mark)
+                self._rollback_watch(trail_mark, watch_mark)
                 continue
 
-            if not self.propagate_watched_literals(q):
-                self.rollback_state(trail_mark, watch_mark)
+            if not self._bcp_watched(q):
+                self._rollback_watch(trail_mark, watch_mark)
                 self.stats.backtracks += 1
                 continue
 
-            result = self.search_watched_literals(depth + 1)
+            result = self._search_watched(depth + 1)
             if result is not None:
                 return result
 
-            self.rollback_state(trail_mark, watch_mark)
+            self._rollback_watch(trail_mark, watch_mark)
             self.stats.backtracks += 1
             #print(f"dpll: backtrack from {choice}")
 
@@ -492,30 +498,6 @@ def format_assignment(assignment, num_vars, clauses):
 def build_cli():
     parser = argparse.ArgumentParser(description="DPLL SAT solver with DLIS and watched literals.")
     parser.add_argument("inputs", nargs="+", help="DIMACS CNF input files")
-    # parser.add_argument(
-    #     "--heuristic",
-    #     choices=("baseline", "dlis"),
-    #     default="baseline",
-    #     help="Decision heuristic for branch selection",
-    # )
-    # parser.add_argument(
-    #     "--propagation",
-    #     choices=("baseline", "watched"),
-    #     default="baseline",
-    #     help="Propagation method to use inside DPLL",
-    # )
-    # parser.add_argument(
-    #     "--heuristic",
-    #     choices=("baseline", "dlis"),
-    #     default="baseline",
-    #     help="Decision heuristic for branch selection",
-    # )
-    # parser.add_argument(
-    #     "--propagation",
-    #     choices=("baseline", "watched"),
-    #     default="watched",
-    #     help="Propagation method to use inside DPLL",
-    # )
     parser.add_argument(
         "--heuristic",
         choices=("baseline", "dlis"),

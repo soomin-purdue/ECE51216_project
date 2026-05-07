@@ -303,6 +303,8 @@ classification. Second, it allowed us to separate search-tree effects
 
 The final benchmark set contains 47 DIMACS CNF instances. It combines small
 sanity-check inputs with larger SATLIB-style random instances.
+In addition to this core comparison set, we also ran selected 200-variable
+\texttt{uf200-*} and \texttt{uuf200-*} instances as larger stress tests.
 
 \begin{center}
 \small
@@ -340,6 +342,10 @@ For every benchmark, we executed the following three variants:
     \item \textbf{watched}: \texttt{--heuristic baseline --propagation watched}
     \item \textbf{dlis+watched}: \texttt{--heuristic dlis --propagation watched}
 \end{itemize}
+
+When no options are provided, \texttt{DPLL\_heuristic.py} defaults to
+\texttt{dlis+watched}. The options above are used when we want to explicitly
+separate the three solver variants.
 
 This comparison isolates the contribution of each enhancement:
 
@@ -389,13 +395,15 @@ reported performance differences are comparisons among correct solvers.
 The submitted solver entry point is \texttt{DPLL\_heuristic.py}. It provides a
 command-line interface for solving DIMACS CNF files and for selecting the
 heuristic configuration used in the experiments. A single-file grading-style
-baseline run is:
+run is:
 
 \begin{quote}
 \small
 \ttfamily
-python3 DPLL\_heuristic.py benchmarks/sat/example-1.cnf --heuristic baseline --propagation baseline
+python3 DPLL\_heuristic.py benchmarks/sat/example-1.cnf
 \end{quote}
+
+This default command runs the final \texttt{dlis+watched} configuration.
 
 This interface accepts one or more input files as command-line arguments. In
 the default grading-style mode, it prints only the SAT/UNSAT result and a
@@ -416,7 +424,7 @@ used in the tables:
 \begin{quote}
 \small
 \ttfamily
-python3 DPLL\_heuristic.py input.cnf --heuristic dlis --propagation watched --print-stats
+python3 DPLL\_heuristic.py input.cnf --print-stats
 \end{quote}
 
 The benchmark runner calls the solver through its Python API to compare the
