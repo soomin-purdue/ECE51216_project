@@ -14,6 +14,8 @@
 
 \titlespacing*{\subsection}
 {0pt}{0.45em}{0.2em}
+\titlespacing*{\subsubsection}
+{0pt}{0.35em}{0.15em}
 
 \begin{document}
 
@@ -25,12 +27,19 @@
     \textbf{Soomin Lee, Dogyu Ryu}
 \end{center}
 
-\section{Introduction and Scope}
+\section{Motivation and Rationale}
 
 The goal of this project was to build a SAT solver for CNF formulas in DIMACS
-format and to study how solver behavior changes when advanced heuristics and
-data structures are added on top of a basic DPLL implementation. We therefore
-started from a clean recursive DPLL baseline and then extended it in two ways:
+format and to study how solver behavior changes when stronger heuristics and
+data structures are added on top of a basic DPLL implementation. SAT solving is
+a natural topic for this project because it is both algorithmically simple at
+the baseline level and highly sensitive to implementation choices. A plain DPLL
+solver is easy to understand, but its performance depends heavily on how Boolean
+Constraint Propagation (BCP) is implemented and how branch literals are chosen.
+
+For that reason, our rationale was to build the solver in stages. We first
+implemented a correct recursive DPLL baseline, then added one improvement that
+changes propagation cost and one improvement that changes decision quality:
 
 \begin{itemize}
     \item \textbf{watched literals} for more efficient Boolean Constraint
@@ -57,7 +66,12 @@ evaluated are DPLL recursion, BCP, watched literals, and DLIS. This design
 choice kept the implementation focused and made the performance comparison easy
 to interpret.
 
-\section{Algorithmic Description}
+Accordingly, the pseudo-code below describes the basic DPLL algorithm and every
+major heuristic implemented in our solver. We do not provide pseudo-code for
+conflict clause learning or non-chronological backtracking because those
+features were outside the final implementation.
+
+\section{Algorithms and Data Structures Chosen}
 
 \subsection{Baseline DPLL}
 
@@ -81,11 +95,13 @@ DPLL(F, A, heuristic, propagation)\\
 \hspace*{1em}l <- CHOOSE\_LITERAL(current formula, current assignment, heuristic)\\
 \hspace*{1em}for decision literal d in [l, -l] do\\
 \hspace*{2em}record one decision\\
-\hspace*{2em}apply d to a copied branch state\\
+\hspace*{2em}save current assignment/watch rollback marks\\
+\hspace*{2em}apply d to the current branch state\\
 \hspace*{2em}if branch immediately creates empty clause then\\
-\hspace*{3em}record conflict and continue\\
+\hspace*{3em}record conflict, rollback branch state, and continue\\
 \hspace*{2em}result <- DPLL(next branch state)\\
 \hspace*{2em}if result is SAT then return result\\
+\hspace*{2em}rollback branch state\\
 \hspace*{2em}record one backtrack\\
 \hspace*{1em}return failure
 \end{quote}
@@ -196,12 +212,12 @@ number of decisions, conflicts, and backtracks, especially on larger random
 benchmarks. However, counting literal frequencies also adds overhead, so the
 runtime effect must be measured experimentally rather than assumed.
 
-\section{Data Structures and Design Choices}
+\subsection{Data Structures and Design Choices}
 
 The solver is written in Python, so the data structures were chosen to balance
 clarity, correctness, and reasonable performance for the course project scale.
 
-\subsection{Formula Representation}
+\subsubsection{Formula Representation}
 
 Each literal is represented as a signed integer. For example, literal $x_7$ is
 stored as \texttt{7}, and $\neg x_7$ is stored as \texttt{-7}. This matches the
@@ -213,48 +229,50 @@ are simple, compact, and safe to share across recursive calls without accidental
 in-place modification. In the baseline propagation path, simplification produces new tuples
 when clauses are reduced, which keeps branch behavior easy to reason about.
 
-\subsection{Assignment Representation}
+\subsubsection{Assignment Representation}
 
-The current partial assignment is stored as a dictionary from variable id to
-Boolean value:
+The solver stores the current partial assignment in a dense array indexed by
+variable id:
 \begin{center}
-\texttt{\{ variable : True/False \}}
+\texttt{vals[var] = 1 for true, 0 for false, -1 for unassigned}
 \end{center}
 
 This representation is convenient because:
 \begin{itemize}
-    \item lookup by variable id is constant time on average,
-    \item a partial assignment only stores variables that have actually been
-    fixed so far,
-    \item copying the assignment for a recursive branch is simple and explicit.
+    \item DIMACS variable ids are dense positive integers, so array indexing is
+    natural,
+    \item lookup by variable id is constant time without dictionary overhead,
+    \item the same representation works for both baseline propagation and
+    watched-literal propagation,
+    \item a trail can record which variables were assigned in the current
+    branch so they can be reset during rollback.
 \end{itemize}
 
-The helper function \texttt{literal\_value(literal, assignment)} interprets the
-sign of the literal and returns \texttt{True}, \texttt{False}, or
-\texttt{None} for unassigned.
+The helper function for literal evaluation interprets the sign of the literal
+and returns true, false, or unassigned under the current \texttt{vals} array.
 
-\subsection{Watched-Literal State}
+\subsubsection{Watched-Literal State}
 
 The watched-literal implementation uses a dedicated state object containing:
 
 \begin{itemize}
-    \item \texttt{formula}: the immutable tuple of clauses,
-    \item \texttt{assignment}: the current partial assignment,
-    \item \texttt{watch\_positions}: for each clause, the indices of the two
+    \item \texttt{clauses}: the immutable tuple of original clauses,
+    \item \texttt{vals}: the current partial assignment array,
+    \item \texttt{watch\_pos}: for each clause, the indices of the two
     watched positions,
-    \item \texttt{watch\_lists}: a map from literal to the list of clause ids
+    \item \texttt{watch\_map}: a map from literal to the list of clause ids
     currently watching that literal,
-    \item \texttt{unit\_queue}: a FIFO queue of literals waiting to be
+    \item \texttt{root\_units} and branch queues: FIFO queues of literals waiting to be
     propagated.
 \end{itemize}
 
 These choices were made for specific reasons.
 
-First, \texttt{watch\_positions} stores indices rather than literal values. This
+First, \texttt{watch\_pos} stores indices rather than literal values. This
 makes it easy to move a watch from one position to another without rewriting the
 clause itself.
 
-Second, \texttt{watch\_lists} is indexed by literal, so when a literal becomes
+Second, \texttt{watch\_map} is indexed by literal, so when a literal becomes
 false we can immediately find the only clauses that might need attention. This
 is the key efficiency advantage of watched literals.
 
@@ -262,13 +280,14 @@ Third, the unit queue is implemented using \texttt{deque}, which supports cheap
 append and pop operations from the front. A FIFO queue is sufficient because
 the correctness of unit propagation does not depend on a particular order.
 
-Finally, each recursive branch copies the watched state rather than performing
-in-place mutation followed by manual undo. This is not the most memory-optimal
-approach, but it is a good engineering tradeoff in Python: the code is less
-error-prone, the recursive search remains easy to understand, and the benchmark
-sizes used in this project are still manageable.
+Finally, the watched-literal path uses in-place mutation with explicit rollback
+rather than copying the entire watched state at every recursive branch. The
+solver keeps a variable assignment trail and a \texttt{watch\_moves} stack. When
+a branch fails, it rolls back assignments to the saved trail mark and restores
+watch positions to the saved watch-move mark. This avoids repeatedly copying
+large watch lists while still keeping backtracking behavior deterministic.
 
-\subsection{Instrumentation}
+\subsubsection{Instrumentation}
 
 Solver statistics are stored in a small \texttt{SolverStats} record containing
 decisions, propagations, conflicts, backtracks, recursive calls, maximum depth,
@@ -290,9 +309,7 @@ sanity-check inputs with larger SATLIB-style random instances.
 \renewcommand{\arraystretch}{1.08}
 \begin{tabular}{|p{2.2cm}|p{0.9cm}|p{1.0cm}|p{2.2cm}|p{6.0cm}|}
 \hline
-\textbf{Family} & \textbf{Count} & \textbf{Type} & \textbf{Typical Size} & \textbf{Role in Evaluation} \\
-\hline
-\texttt{example-1} & 1 & SAT & 200 vars, 200 clauses & Legacy sample used as a quick correctness check. \\
+\textbf{Family} & \textbf{Count} & \textbf{Type} & \textbf{Size} & \textbf{Role in Evaluation} \\
 \hline
 \texttt{uf20-*} & 2 & SAT & 20 vars, 91 clauses & Small random SAT instances used to observe early backtracking behavior. \\
 \hline
@@ -354,12 +371,57 @@ metrics such as decisions, conflicts, and backtracks are especially important:
 they reveal whether a heuristic is actually changing the logical search, not
 just the implementation overhead.
 
+Runtime can vary slightly across runs due to system load and Python interpreter
+overhead. Therefore, the reported runtime values should be interpreted as
+representative measurements from one benchmark run, while the count-based
+metrics such as decisions, conflicts, and backtracks are deterministic for a
+fixed solver configuration.
+
 \subsection{Correctness Checking}
 
 Each benchmark belongs to a SAT or UNSAT directory, so the expected result is
 known in advance. The benchmark runner checks every output against that expected
 classification. All three variants solved all 47 inputs correctly, so the
 reported performance differences are comparisons among correct solvers.
+
+\subsection{Solver Interface}
+
+The submitted solver entry point is \texttt{DPLL\_heuristic.py}. It provides a
+command-line interface for solving DIMACS CNF files and for selecting the
+heuristic configuration used in the experiments. A single-file grading-style
+baseline run is:
+
+\begin{quote}
+\small
+\ttfamily
+python3 DPLL\_heuristic.py benchmarks/sat/example-1.cnf --heuristic baseline --propagation baseline
+\end{quote}
+
+This interface accepts one or more input files as command-line arguments. In
+the default grading-style mode, it prints only the SAT/UNSAT result and a
+satisfying assignment when the instance is satisfiable. A typical output is:
+
+\begin{quote}
+\small
+\ttfamily
+\raggedright
+RESULT:SAT\\
+ASSIGNMENT:1=0 2=0 3=1 4=0 5=1 6=1 ...
+\end{quote}
+
+The same executable is used for the advanced variants. For internal
+experiments, the optional \texttt{--print-stats} flag reports the statistics
+used in the tables:
+
+\begin{quote}
+\small
+\ttfamily
+python3 DPLL\_heuristic.py input.cnf --heuristic dlis --propagation watched --print-stats
+\end{quote}
+
+The benchmark runner calls the solver through its Python API to compare the
+three variants under the same input set. This keeps the command-line interface
+simple while avoiding subprocess overhead during benchmarking.
 
 \section{Results}
 
@@ -370,19 +432,19 @@ reported performance differences are comparisons among correct solvers.
 \renewcommand{\arraystretch}{1.08}
 \begin{tabular}{|l|l|r|r|r|r|}
 \hline
-\textbf{Group} & \textbf{Variant} & \textbf{Avg Decisions} & \textbf{Avg Conflicts} & \textbf{Avg Backtracks} & \textbf{Avg Runtime(s)} \\
+\textbf{Group} & \textbf{Variant} & \textbf{Avg Decisions} & \textbf{Avg Conflicts} & \textbf{Avg Backtracks} & \textbf{Avg Runtime(ms)} \\
 \hline
-Overall & baseline & 205.38 & 101.30 & 200.34 & 0.013986 \\
-Overall & watched & 205.38 & 101.30 & 200.34 & 0.006409 \\
-Overall & dlis+watched & 76.55 & 36.13 & 70.68 & 0.007587 \\
+Overall & baseline & 205.38 & 101.30 & 200.34 & 13.399 \\
+Overall & watched & 205.38 & 101.30 & 200.34 & 5.962 \\
+Overall & dlis+watched & 76.55 & 36.13 & 70.68 & 6.702 \\
 \hline
-SAT only & baseline & 97.70 & 44.96 & 87.39 & 0.006175 \\
-SAT only & watched & 97.70 & 44.96 & 87.39 & 0.003191 \\
-SAT only & dlis+watched & 40.96 & 15.04 & 28.96 & 0.004530 \\
+SAT only & baseline & 97.70 & 44.96 & 87.39 & 5.766 \\
+SAT only & watched & 97.70 & 44.96 & 87.39 & 2.771 \\
+SAT only & dlis+watched & 40.96 & 15.04 & 28.96 & 3.760 \\
 \hline
-UNSAT only & baseline & 308.58 & 155.29 & 308.58 & 0.021471 \\
-UNSAT only & watched & 308.58 & 155.29 & 308.58 & 0.009493 \\
-UNSAT only & dlis+watched & 110.67 & 56.33 & 110.67 & 0.010516 \\
+UNSAT only & baseline & 308.58 & 155.29 & 308.58 & 20.715 \\
+UNSAT only & watched & 308.58 & 155.29 & 308.58 & 9.019 \\
+UNSAT only & dlis+watched & 110.67 & 56.33 & 110.67 & 9.522 \\
 \hline
 \end{tabular}
 \end{center}
@@ -401,7 +463,7 @@ backtracks. Relative to the baseline over the full benchmark set, it lowers:
     \item decisions by \textbf{62.7\%},
     \item conflicts by \textbf{64.3\%},
     \item backtracks by \textbf{64.7\%},
-    \item runtime by \textbf{45.8\%}.
+    \item runtime by \textbf{50.0\%}.
 \end{itemize}
 
 This is strong evidence that DLIS changes the search tree in a favorable way by
@@ -414,9 +476,9 @@ clean because the decision strategy is identical in both cases. Every change in
 runtime can therefore be attributed to the propagation mechanism rather than to
 a different sequence of branch choices.
 
-Over all 47 benchmarks, watched literals reduce average runtime from 0.013986s
-to 0.006409s, a \textbf{54.2\%} improvement. On SAT instances alone, the
-runtime drops by 48.3\%, and on UNSAT instances it drops by 55.8\%.
+Over all 47 benchmarks, watched literals reduce average runtime from 13.399 ms
+to 5.962 ms, a \textbf{55.5\%} improvement. On SAT instances alone, the
+runtime drops by 51.9\%, and on UNSAT instances it drops by 56.5\%.
 
 The fact that decisions, conflicts, and backtracks remain exactly the same is
 not a weakness; it is the expected signature of a successful propagation data
@@ -430,12 +492,15 @@ decision heuristic. Here the propagation mechanism is the same, so differences
 are caused by the branch literal choice.
 
 On the SAT subset, DLIS reduces decisions from 97.70 to 40.96 on average, a
-\textbf{58.1\%} reduction. Conflicts drop by 66.5\%, backtracks by 66.9\%, and
-runtime by 26.6\%.
+\textbf{58.1\%} reduction. Conflicts drop by 66.5\%, and backtracks drop by
+66.9\%. Runtime is still 34.8\% lower than the baseline, although it is higher
+than watched literals alone because recomputing DLIS counts adds overhead.
 
 On the UNSAT subset, DLIS reduces decisions from 308.58 to 110.67 on average,
 a \textbf{64.1\%} reduction. Conflicts drop by 63.7\%, backtracks by 64.1\%,
-and runtime by 51.0\%.
+and runtime is 54.0\% lower than the baseline. As with the SAT subset, the
+runtime difference between \texttt{watched} and \texttt{dlis+watched} is small
+because DLIS saves search work but spends extra time counting literals.
 
 This behavior is consistent with the intended role of DLIS. By choosing a
 literal that appears frequently in unsatisfied clauses, the solver often
@@ -452,23 +517,23 @@ benchmarks into small sanity-check cases and larger random instances.
 \renewcommand{\arraystretch}{1.08}
 \begin{tabular}{|l|r|r|r|r|r|}
 \hline
-\textbf{Group} & \textbf{Count} & \textbf{Variant} & \textbf{Avg Decisions} & \textbf{Avg Backtracks} & \textbf{Avg Runtime(s)} \\
+\textbf{Group} & \textbf{Count} & \textbf{Variant} & \textbf{Avg Decisions} & \textbf{Avg Backtracks} & \textbf{Avg Runtime(ms)} \\
 \hline
-Small SAT & 3 & baseline & 16.67 & 10.00 & 0.000322 \\
-Small SAT & 3 & watched & 16.67 & 10.00 & 0.000382 \\
-Small SAT & 3 & dlis+watched & 8.67 & 3.67 & 0.000746 \\
+Small SAT & 3 & baseline & 16.67 & 10.00 & 0.322 \\
+Small SAT & 3 & watched & 16.67 & 10.00 & 0.382 \\
+Small SAT & 3 & dlis+watched & 8.67 & 3.67 & 0.746 \\
 \hline
-Large SAT & 20 & baseline & 109.85 & 99.00 & 0.006705 \\
-Large SAT & 20 & watched & 109.85 & 99.00 & 0.003768 \\
-Large SAT & 20 & dlis+watched & 45.80 & 32.75 & 0.004837 \\
+Large SAT & 20 & baseline & 109.85 & 99.00 & 6.705 \\
+Large SAT & 20 & watched & 109.85 & 99.00 & 3.768 \\
+Large SAT & 20 & dlis+watched & 45.80 & 32.75 & 4.837 \\
 \hline
-Small UNSAT & 4 & baseline & 9.50 & 9.50 & 0.000056 \\
-Small UNSAT & 4 & watched & 9.50 & 9.50 & 0.000104 \\
-Small UNSAT & 4 & dlis+watched & 9.50 & 9.50 & 0.000169 \\
+Small UNSAT & 4 & baseline & 9.50 & 9.50 & 0.056 \\
+Small UNSAT & 4 & watched & 9.50 & 9.50 & 0.104 \\
+Small UNSAT & 4 & dlis+watched & 9.50 & 9.50 & 0.169 \\
 \hline
-Large UNSAT & 20 & baseline & 368.40 & 368.40 & 0.025014 \\
-Large UNSAT & 20 & watched & 368.40 & 368.40 & 0.010948 \\
-Large UNSAT & 20 & dlis+watched & 130.90 & 130.90 & 0.012206 \\
+Large UNSAT & 20 & baseline & 368.40 & 368.40 & 25.014 \\
+Large UNSAT & 20 & watched & 368.40 & 368.40 & 10.948 \\
+Large UNSAT & 20 & dlis+watched & 130.90 & 130.90 & 12.206 \\
 \hline
 \end{tabular}
 \end{center}
@@ -477,7 +542,7 @@ This table reveals an important trend.
 
 For the \textbf{small} SAT and UNSAT groups, the advanced variants can be
 slower even when they reduce the search tree. For example, small SAT runtime
-increases from 0.000322s in the baseline to 0.000746s in \texttt{dlis+watched}
+increases from 0.322 ms in the baseline to 0.746 ms in \texttt{dlis+watched}
 even though decisions drop from 16.67 to 8.67. The reason is simple: on tiny
 inputs the overhead of maintaining watch structures and recomputing DLIS counts
 can dominate the total runtime.
@@ -506,8 +571,8 @@ backtracks on the SAT subset.
 
 For UNSAT problems, the solver must prove that \emph{every} branch fails. As a
 result, the search trees are typically larger, and the baseline averages are
-much higher: 308.58 decisions and 0.021471s runtime on UNSAT, compared with
-97.70 decisions and 0.006175s on SAT. This also explains why watched literals
+much higher: 308.58 decisions and 20.715 ms runtime on UNSAT, compared with
+97.70 decisions and 5.766 ms on SAT. This also explains why watched literals
 show particularly strong runtime improvement on UNSAT instances: when the search
 tree is large, propagation happens more often, so a propagation optimization has
 more opportunities to pay off.
@@ -519,8 +584,9 @@ The project still has several limitations.
 \begin{itemize}
     \item The solver is implemented in Python, so the absolute runtime is not
     competitive with industrial SAT solvers.
-    \item The watched-literal implementation copies state at recursive branches
-    instead of using an optimized trail and undo stack.
+    \item The watched-literal implementation uses a trail and undo stack, but
+    it is still a compact educational implementation rather than a fully
+    optimized industrial memory layout.
     \item The solver does not include CDCL features such as learned clauses,
     non-chronological backtracking, VSIDS, clause database management, or
     restarts.
