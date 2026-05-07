@@ -34,6 +34,13 @@ The goal is to keep a plain baseline solver and then measure how watched literal
 - `--heuristic baseline|dlis`
 - `--propagation baseline|watched`
 
+If these options are omitted, the solver uses `--heuristic dlis --propagation watched`
+by default. This is the intended submission mode for the single-command interface:
+
+```bash
+python3 DPLL_heuristic.py benchmark.cnf
+```
+
 For the project comparison, the main variants are:
 
 1. `baseline`
@@ -47,6 +54,12 @@ For the project comparison, the main variants are:
 `DLIS` changes decision selection.
 
 ## Quick Commands
+
+Run the default solver on a single file:
+
+```bash
+python3 DPLL_heuristic.py benchmarks/sat/example-1.cnf
+```
 
 Run the baseline solver on a single file:
 
