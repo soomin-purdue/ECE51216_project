@@ -38,7 +38,7 @@ If these options are omitted, the solver uses `--heuristic dlis --propagation wa
 by default. This is the intended submission mode for the single-command interface:
 
 ```bash
-python3 DPLL_heuristic.py benchmark.cnf
+python3 DPLL_heuristic.py benchmarks/sat/uf20-01.cnf
 ```
 
 For the project comparison, the main variants are:
